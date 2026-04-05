@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "FitDownloader",
+  "description": "On FitGirl repack pages, collect all direct file links and trigger their downloads automatically.",
+  "version": "0.1.0",
+  "permissions": [
+    "scripting",
+    "tabs",
+    "activeTab",
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://fitgirl-repacks.site/*",
+    "https://fuckingfast.co/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "FitDownloader",
+    "default_popup": "popup.html"
+  }
+}
+
+

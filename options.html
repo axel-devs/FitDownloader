@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>FitDownloader Settings</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        font-size: 14px;
+        margin: 16px;
+        max-width: 640px;
+      }
+      h1 {
+        font-size: 20px;
+        margin-bottom: 8px;
+      }
+      label {
+        display: inline-block;
+        margin-bottom: 6px;
+      }
+      input[type="number"] {
+        width: 80px;
+        padding: 4px;
+        font-size: 14px;
+      }
+      button {
+        padding: 6px 14px;
+        font-size: 14px;
+        border-radius: 3px;
+        border: 1px solid #007aff;
+        background: #007aff;
+        color: white;
+        cursor: pointer;
+      }
+      #status {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #444;
+      }
+      p.note {
+        font-size: 13px;
+        color: #555;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>FitDownloader Settings</h1>
+
+    <p class="note">
+      These settings control how many files the extension will download at the
+      same time when you start a batch from the popup.
+    </p>
+
+    <label for="concurrency-input">
+      Maximum concurrent downloads (1–20):
+    </label>
+    <br />
+    <input
+      type="number"
+      id="concurrency-input"
+      min="1"
+      max="20"
+      step="1"
+    />
+
+    <div style="margin-top: 12px">
+      <button id="save-button">Save</button>
+    </div>
+
+    <p class="note">
+      For a true one-click experience without save dialogs, make sure Chrome's
+      <strong>“Ask where to save each file before downloading”</strong> setting
+      is turned off. The extension cannot override that browser-wide setting.
+    </p>
+
+    <div id="status"></div>
+
+    <script src="options.js"></script>
+  </body>
+</html>
+
+
