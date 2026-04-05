@@ -1,6 +1,10 @@
+<p align="center">
+<img width="128" height="128" alt="icon-128" src="https://github.com/user-attachments/assets/2321f3ab-7e7f-41d0-a200-64cd81906c05" />
+</p>
+
 ## FitDownloader
 
-FitDownloader is a Chrome extension that scans supported FitGirl repack pages for `fuckingfast.co` links, lets you choose which files to keep, and starts the downloads in the background with a configurable concurrency limit.
+FitDownloader is a simple Chrome extension that scans supported FitGirl repack pages for `fuckingfast.co` links, lets you choose which files to keep, and starts the downloads in the background with a configurable concurrency limit.
 
 ## Installation
 
