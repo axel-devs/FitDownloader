@@ -71,6 +71,33 @@ async function saveSessions() {
   await chrome.storage.local.set({ ffSessions: sessions });
 }
 
+function normalizeSessionUrl(url) {
+  if (typeof url !== "string" || !url.length) return "";
+
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    return parsed.toString();
+  } catch (e) {
+    return url.split("#")[0];
+  }
+}
+
+function shouldReuseSessionForTab(session, tab) {
+  if (!session) return false;
+
+  const samePage =
+    normalizeSessionUrl(session.sourceUrl) === normalizeSessionUrl(tab?.url);
+
+  if (samePage) {
+    return true;
+  }
+
+  // Once a batch has been started for a tab, keep showing that tab-scoped
+  // batch state even if the user navigates elsewhere in the same tab.
+  return session.hasStarted === true;
+}
+
 function broadcastSessionUpdate(tabId) {
   // In MV3, sendMessage may reject with "Receiving end does not exist"
   // when no views (popup, etc.) are open. We explicitly ignore that.
@@ -212,7 +239,7 @@ async function ensureSessionForTab(tab) {
   await loadSessions();
 
   let session = sessions[tab.id];
-  if (session && Array.isArray(session.items) && session.items.length) {
+  if (shouldReuseSessionForTab(session, tab)) {
     return session;
   }
 
@@ -409,10 +436,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
         const tabId = tab.id;
-        let session = sessions[tabId];
-        if (!session) {
-          session = await ensureSessionForTab(tab);
-        }
+        const session = await ensureSessionForTab(tab);
 
         const selectedUrls = new Set(
           (message.items || [])
