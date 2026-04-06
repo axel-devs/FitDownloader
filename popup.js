@@ -198,7 +198,8 @@ function renderStatusView(session) {
 
     let text = item.state || "queued";
     let cls = "status-queued";
-    if (item.state === "downloading") { text = "downloading"; cls = "status-downloading"; }
+    if (item.state === "starting") { text = "starting"; cls = "status-downloading"; }
+    else if (item.state === "downloading") { text = "downloading"; cls = "status-downloading"; }
     else if (item.state === "completed") { text = "completed"; cls = "status-completed"; }
     else if (item.state === "error") { text = "error"; cls = "status-error"; }
     else if (item.state === "paused") { text = "paused"; cls = "status-paused"; }
@@ -212,10 +213,11 @@ function renderStatusView(session) {
     filesListEl.appendChild(row);
   });
 
-  const counts = { queued: 0, downloading: 0, completed: 0, error: 0, paused: 0, cancelled: 0 };
+  const counts = { queued: 0, starting: 0, downloading: 0, completed: 0, error: 0, paused: 0, cancelled: 0 };
   items.forEach((i) => { counts[i.state] = (counts[i.state] || 0) + 1; });
 
   const parts = [];
+  if (counts.starting) parts.push(`${counts.starting} starting`);
   if (counts.completed) parts.push(`${counts.completed} completed`);
   if (counts.downloading) parts.push(`${counts.downloading} downloading`);
   if (counts.paused) parts.push(`${counts.paused} paused`);
@@ -228,7 +230,11 @@ function renderStatusView(session) {
   }
 
   const anyActive = items.some(
-    (i) => i.state === "queued" || i.state === "downloading" || i.state === "paused"
+    (i) =>
+      i.state === "queued" ||
+      i.state === "starting" ||
+      i.state === "downloading" ||
+      i.state === "paused"
   );
   const hasErrors = counts.error > 0;
 
