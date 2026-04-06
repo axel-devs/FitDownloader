@@ -12,11 +12,11 @@ FitDownloader is a simple Chrome extension that scans supported FitGirl repack p
 
 ## Installation
 
-1. [Download](https://github.com/axel-devs/FitDownloader/archive/refs/heads/main.zip) or clone this repository.
+1. [Download](https://github.com/axel-devs/FitDownloader/archive/refs/heads/main.zip), or clone this repository.
 2. Open `chrome://extensions/` in Chrome.
 3. Turn on **Developer mode**.
 4. Click **Load unpacked**.
-5. Select the project root folder.
+5. Select the unzipped project folder.
 
 ## Usage
 
