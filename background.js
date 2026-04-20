@@ -402,7 +402,7 @@ async function extractFuckingFastLinks(tabId) {
 /**
  * Given a FuckingFast landing URL, fetch its HTML and extract the
  * underlying direct /dl/... URL that the page's download() function
- * would open.
+ * would open. FuckingFast currently serves these from dl.fuckingfast.co.
  */
 async function getDirectDownloadUrl(fuckingFastUrl) {
   const attempts = [fuckingFastUrl, swapProtocol(fuckingFastUrl)];
@@ -421,7 +421,9 @@ async function getDirectDownloadUrl(fuckingFastUrl) {
 
       const html = await res.text();
 
-      const match = html.match(/https?:\/\/fuckingfast\.co\/dl\/[^"]+/);
+      const match = html.match(
+        /https?:\/\/(?:dl\.)?fuckingfast\.co\/dl\/[^\s"'<>\\]+/
+      );
       if (!match) {
         lastError = new Error("Direct /dl/ URL not found in FuckingFast page HTML");
         continue;

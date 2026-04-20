@@ -12,7 +12,8 @@
   ],
   "host_permissions": [
     "https://fitgirl-repacks.site/*",
-    "https://fuckingfast.co/*"
+    "https://fuckingfast.co/*",
+    "https://dl.fuckingfast.co/*"
   ],
   "background": {
     "service_worker": "background.js"
