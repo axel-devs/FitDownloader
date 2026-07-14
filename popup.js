@@ -14,15 +14,45 @@ const activeControlsEl = document.getElementById("active-controls");
 const cancelButtonEl = document.getElementById("cancel-button");
 const pauseResumeButtonEl = document.getElementById("pause-resume-button");
 const retryButtonEl = document.getElementById("retry-button");
+const destinationLabelEl = document.getElementById("destination-label");
+const pickFolderButtonEl = document.getElementById("pick-folder-button");
+const gameTitleEl = document.getElementById("game-title");
 
 let currentSession = null;
 let currentTabId = null;
+let hasFolderPermission = false;
 
 let lastClickedIndex = -1;
 let highlightedIndices = new Set();
 
 function setView(view) {
   document.body.dataset.view = view;
+}
+
+function updateDestinationUi(session) {
+  const name = session?.destinationName || "";
+  if (name && hasFolderPermission) {
+    destinationLabelEl.textContent = name;
+    destinationLabelEl.classList.add("has-folder");
+    destinationLabelEl.title = name;
+    pickFolderButtonEl.textContent = "Change…";
+  } else if (name && !hasFolderPermission) {
+    destinationLabelEl.textContent = `${name} (permission needed)`;
+    destinationLabelEl.classList.remove("has-folder");
+    destinationLabelEl.title = "Click Choose folder to re-grant write access";
+    pickFolderButtonEl.textContent = "Grant access";
+  } else {
+    destinationLabelEl.textContent = "No folder selected";
+    destinationLabelEl.classList.remove("has-folder");
+    destinationLabelEl.title = "";
+    pickFolderButtonEl.textContent = "Choose folder";
+  }
+}
+
+function canStart() {
+  const checkboxes = filesListEl.querySelectorAll('input[type="checkbox"]');
+  const checked = Array.from(checkboxes).some((cb) => cb.checked);
+  return checked && hasFolderPermission;
 }
 
 function updateHighlights() {
@@ -42,7 +72,7 @@ function updateSelectionInfo() {
   const total = checkboxes.length;
   const checked = Array.from(checkboxes).filter((cb) => cb.checked).length;
   selectionInfoEl.textContent = `${checked} of ${total} file(s) selected`;
-  startButtonEl.disabled = checked === 0;
+  startButtonEl.disabled = !canStart();
 }
 
 function updateSelectAllFromChildren() {
@@ -104,10 +134,6 @@ function handleRowClick(event, index) {
   updateSelectionInfo();
 }
 
-// ---------------------------------------------------------------------------
-// Selection view (pre-start)
-// ---------------------------------------------------------------------------
-
 function renderSelectionView(session) {
   const items = session?.items || [];
   filesListEl.innerHTML = "";
@@ -115,7 +141,9 @@ function renderSelectionView(session) {
   highlightedIndices.clear();
   startButtonEl.style.display = "";
   activeControlsEl.classList.remove("visible");
-  retryButtonEl.style.display = "none";
+
+  const hasFailed = Array.isArray(session?.failedUrls) && session.failedUrls.length > 0;
+  retryButtonEl.style.display = hasFailed ? "" : "none";
 
   if (!items.length) {
     statusEl.textContent = "No FuckingFast links were detected on this page.";
@@ -157,16 +185,11 @@ function renderSelectionView(session) {
     filesListEl.appendChild(row);
   });
 
-  startButtonEl.disabled = false;
   statusEl.textContent =
     `Found ${items.length} FuckingFast link(s). ` +
     "Shift+Click for range, Ctrl+Click to toggle individually.";
   updateSelectionInfo();
 }
-
-// ---------------------------------------------------------------------------
-// Status view (downloads running / finished)
-// ---------------------------------------------------------------------------
 
 function renderStatusView(session) {
   const items = session?.items || [];
@@ -206,6 +229,7 @@ function renderStatusView(session) {
     else if (item.state === "cancelled") { text = "cancelled"; cls = "status-cancelled"; }
 
     status.textContent = text;
+    status.title = item.error || text;
     status.classList.add(cls);
 
     row.appendChild(label);
@@ -213,7 +237,15 @@ function renderStatusView(session) {
     filesListEl.appendChild(row);
   });
 
-  const counts = { queued: 0, starting: 0, downloading: 0, completed: 0, error: 0, paused: 0, cancelled: 0 };
+  const counts = {
+    queued: 0,
+    starting: 0,
+    downloading: 0,
+    completed: 0,
+    error: 0,
+    paused: 0,
+    cancelled: 0
+  };
   items.forEach((i) => { counts[i.state] = (counts[i.state] || 0) + 1; });
 
   const parts = [];
@@ -244,7 +276,7 @@ function renderStatusView(session) {
     startButtonEl.style.display = "none";
     retryButtonEl.style.display = "none";
 
-    const anyPaused = items.some((i) => i.state === "paused");
+    const anyPaused = items.some((i) => i.state === "paused") || session.paused;
     pauseResumeButtonEl.textContent = anyPaused ? "Resume" : "Pause";
     pauseResumeButtonEl.className = anyPaused ? "btn-success" : "btn-warning";
   } else {
@@ -262,12 +294,19 @@ function renderStatusView(session) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Session render dispatcher
-// ---------------------------------------------------------------------------
-
 function renderSession(session) {
   currentSession = session;
+  updateDestinationUi(session);
+
+  if (gameTitleEl) {
+    if (session?.title) {
+      gameTitleEl.style.display = "";
+      gameTitleEl.textContent = session.title;
+    } else {
+      gameTitleEl.style.display = "none";
+      gameTitleEl.textContent = "";
+    }
+  }
 
   if (!session || !Array.isArray(session.items) || !session.items.length) {
     filesListEl.innerHTML = "";
@@ -288,10 +327,6 @@ function renderSession(session) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function getSelectedItemsForStart() {
   const selected = [];
   const checkboxes = filesListEl.querySelectorAll('input[type="checkbox"]');
@@ -310,9 +345,61 @@ function getSelectedItemsForStart() {
   return selected;
 }
 
-// ---------------------------------------------------------------------------
-// Event listeners
-// ---------------------------------------------------------------------------
+async function refreshFolderPermission(tabId) {
+  hasFolderPermission = false;
+  if (tabId == null) return;
+  try {
+    const handle = await loadDirectoryHandle(tabId);
+    if (!handle) return;
+    hasFolderPermission = await ensureReadWritePermission(handle, { request: false });
+  } catch (e) {
+    hasFolderPermission = false;
+  }
+}
+
+async function pickDestinationFolder() {
+  if (currentTabId == null) {
+    statusEl.textContent = "Scan a FitGirl tab first.";
+    return;
+  }
+
+  let handle;
+  try {
+    handle = await showDirectoryPicker({
+      id: "fitdownloader-dest",
+      mode: "readwrite",
+      startIn: "downloads"
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") return;
+    statusEl.textContent = `Folder picker failed: ${err?.message || err}`;
+    return;
+  }
+
+  const allowed = await ensureReadWritePermission(handle, { request: true });
+  if (!allowed) {
+    statusEl.textContent = "Write permission was not granted for that folder.";
+    hasFolderPermission = false;
+    updateDestinationUi(currentSession);
+    return;
+  }
+
+  await storeDirectoryHandle(currentTabId, handle);
+  hasFolderPermission = true;
+
+  chrome.runtime.sendMessage(
+    { type: "set_destination", name: handle.name },
+    (response) => {
+      if (response?.ok && response.session) {
+        renderSession(response.session);
+      } else {
+        if (currentSession) currentSession.destinationName = handle.name;
+        updateDestinationUi(currentSession);
+        updateSelectionInfo();
+      }
+    }
+  );
+}
 
 selectAllEl.addEventListener("change", () => {
   const checkboxes = filesListEl.querySelectorAll('input[type="checkbox"]');
@@ -324,10 +411,35 @@ selectAllEl.addEventListener("change", () => {
   updateSelectionInfo();
 });
 
-startButtonEl.addEventListener("click", () => {
+pickFolderButtonEl.addEventListener("click", () => {
+  pickDestinationFolder();
+});
+
+startButtonEl.addEventListener("click", async () => {
   const selected = getSelectedItemsForStart();
   if (!selected.length) {
     statusEl.textContent = "No files selected.";
+    return;
+  }
+
+  if (!hasFolderPermission) {
+    statusEl.textContent = "Choose a destination folder first.";
+    return;
+  }
+
+  // re-confirm permission on the user gesture
+  try {
+    const handle = await loadDirectoryHandle(currentTabId);
+    const ok = await ensureReadWritePermission(handle, { request: true });
+    if (!ok) {
+      hasFolderPermission = false;
+      statusEl.textContent = "Folder permission lost — choose the folder again.";
+      updateDestinationUi(currentSession);
+      updateSelectionInfo();
+      return;
+    }
+  } catch (e) {
+    statusEl.textContent = "Could not access destination folder.";
     return;
   }
 
@@ -373,10 +485,6 @@ retryButtonEl.addEventListener("click", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Settings
-// ---------------------------------------------------------------------------
-
 function loadSettingsForDisplay() {
   chrome.runtime.sendMessage({ type: "get_settings" }, (response) => {
     if (!response || !response.ok) {
@@ -415,12 +523,8 @@ saveSettingsButtonEl.addEventListener("click", () => {
   );
 });
 
-// ---------------------------------------------------------------------------
-// Tab scanning & live updates
-// ---------------------------------------------------------------------------
-
 function scanCurrentTab() {
-  chrome.runtime.sendMessage({ type: "scan_current_tab" }, (response) => {
+  chrome.runtime.sendMessage({ type: "scan_current_tab" }, async (response) => {
     if (!response || !response.ok) {
       statusEl.textContent =
         response?.error ||
@@ -431,6 +535,7 @@ function scanCurrentTab() {
       return;
     }
     currentTabId = response.tabId ?? null;
+    await refreshFolderPermission(currentTabId);
     renderSession(response.session);
   });
 }

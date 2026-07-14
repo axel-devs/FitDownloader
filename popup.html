@@ -286,6 +286,36 @@
       #active-controls.visible {
         display: flex;
       }
+
+      #destination-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 6px 0 4px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: #15151c;
+        border: 1px solid #282838;
+      }
+
+      #destination-label {
+        flex: 1;
+        font-size: 12px;
+        color: #c0c0d0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      #destination-label.has-folder {
+        color: #f5f5f5;
+      }
+
+      #pick-folder-button {
+        flex-shrink: 0;
+        padding: 3px 8px;
+        font-size: 11px;
+      }
     </style>
   </head>
   <body data-view="main">
@@ -308,6 +338,11 @@
 
       <div id="view-main">
         <div id="status">Scanning current tab for FuckingFast links…</div>
+
+        <div id="destination-row">
+          <span id="destination-label">No folder selected</span>
+          <button id="pick-folder-button" type="button">Choose folder</button>
+        </div>
 
         <div id="files-container">
           <div id="select-all-row" hidden>
@@ -354,15 +389,15 @@
 
         <div class="settings-group" style="margin-top: 10px">
           <span style="font-size: 11px; color: #b0b0c0">
-            For a true one-click experience without save dialogs, turn off
-            Chrome's
-            <strong>"Ask where to save each file before downloading"</strong>
-            setting. The extension cannot override that browser-wide option.
+            Each FitGirl tab stores its own destination folder (forgotten when
+            the tab closes). Files are written directly into that folder via the
+            Windows folder picker — not Chrome's Downloads directory.
           </span>
         </div>
       </div>
     </div>
 
+    <script src="idb-fs.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>
