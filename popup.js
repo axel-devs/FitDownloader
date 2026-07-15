@@ -12,21 +12,69 @@ const settingsStatusEl = document.getElementById("settings-status");
 const selectionInfoEl = document.getElementById("selection-info");
 const activeControlsEl = document.getElementById("active-controls");
 const cancelButtonEl = document.getElementById("cancel-button");
-const pauseResumeButtonEl = document.getElementById("pause-resume-button");
 const retryButtonEl = document.getElementById("retry-button");
 const destinationLabelEl = document.getElementById("destination-label");
 const pickFolderButtonEl = document.getElementById("pick-folder-button");
 const gameTitleEl = document.getElementById("game-title");
+const stopAllButtonEl = document.getElementById("stop-all-button");
+const managerButtonEl = document.getElementById("manager-button");
+const blockedBannerEl = document.getElementById("blocked-banner");
 
 let currentSession = null;
 let currentTabId = null;
 let hasFolderPermission = false;
+let isBlocked = false;
 
 let lastClickedIndex = -1;
 let highlightedIndices = new Set();
 
+const speedSamples = new Map();
+
 function setView(view) {
   document.body.dataset.view = view;
+}
+
+function formatBytes(bytes) {
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const val = bytes / Math.pow(1024, i);
+  return val.toFixed(i > 1 ? 1 : 0) + " " + units[i];
+}
+
+function formatSpeed(bytesPerSec) {
+  if (bytesPerSec <= 0) return "";
+  return formatBytes(bytesPerSec) + "/s";
+}
+
+function computeSpeed(index, bytesWritten) {
+  const now = Date.now();
+  if (!speedSamples.has(index)) {
+    speedSamples.set(index, []);
+  }
+  const samples = speedSamples.get(index);
+  samples.push({ time: now, bytes: bytesWritten });
+  while (samples.length > 1 && now - samples[0].time > 5000) {
+    samples.shift();
+  }
+  if (samples.length < 2) return 0;
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const dt = (last.time - first.time) / 1000;
+  if (dt <= 0) return 0;
+  return (last.bytes - first.bytes) / dt;
+}
+
+function updateBlockedUi() {
+  if (isBlocked) {
+    stopAllButtonEl.textContent = "Unblock";
+    stopAllButtonEl.classList.add("blocked");
+    blockedBannerEl.classList.add("visible");
+  } else {
+    stopAllButtonEl.textContent = "STOP ALL";
+    stopAllButtonEl.classList.remove("blocked");
+    blockedBannerEl.classList.remove("visible");
+  }
 }
 
 function updateDestinationUi(session) {
@@ -50,6 +98,7 @@ function updateDestinationUi(session) {
 }
 
 function canStart() {
+  if (isBlocked) return false;
   const checkboxes = filesListEl.querySelectorAll('input[type="checkbox"]');
   const checked = Array.from(checkboxes).some((cb) => cb.checked);
   return checked && hasFolderPermission;
@@ -139,6 +188,7 @@ function renderSelectionView(session) {
   filesListEl.innerHTML = "";
   lastClickedIndex = -1;
   highlightedIndices.clear();
+  speedSamples.clear();
   startButtonEl.style.display = "";
   activeControlsEl.classList.remove("visible");
 
@@ -153,13 +203,21 @@ function renderSelectionView(session) {
     return;
   }
 
+  const completedSet = new Set(
+    Array.isArray(session?.completedUrls) ? session.completedUrls : []
+  );
+  for (const url of filesOnDisk) completedSet.add(url);
+
   selectAllRowEl.hidden = false;
   selectAllEl.checked = true;
   selectAllEl.indeterminate = false;
+  const existingRestBtn = selectAllRowEl.querySelector(".select-rest-btn");
+  if (existingRestBtn) existingRestBtn.remove();
 
   items.forEach((item, index) => {
     const row = document.createElement("div");
     row.className = "file-row";
+    const isAlreadyDone = completedSet.has(item.url);
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
@@ -170,8 +228,20 @@ function renderSelectionView(session) {
     label.textContent = item.label || item.url;
     label.title = item.label || item.url;
 
+    if (isAlreadyDone) {
+      label.style.opacity = "0.5";
+      label.title += " (already downloaded)";
+    }
+
     row.appendChild(checkbox);
     row.appendChild(label);
+
+    if (isAlreadyDone) {
+      const doneTag = document.createElement("span");
+      doneTag.textContent = "done";
+      doneTag.style.cssText = "font-size:10px;color:#81c784;margin-left:6px;opacity:0.8;";
+      row.appendChild(doneTag);
+    }
 
     row.addEventListener("click", (e) => {
       if (e.target === checkbox) e.preventDefault();
@@ -185,10 +255,103 @@ function renderSelectionView(session) {
     filesListEl.appendChild(row);
   });
 
-  statusEl.textContent =
-    `Found ${items.length} FuckingFast link(s). ` +
+  const hasCompleted = completedSet.size > 0 &&
+    items.some((item) => completedSet.has(item.url));
+
+  let statusText = `Found ${items.length} FuckingFast link(s). ` +
     "Shift+Click for range, Ctrl+Click to toggle individually.";
+  if (hasCompleted) {
+    const doneCount = items.filter((i) => completedSet.has(i.url)).length;
+    statusText = `Found ${items.length} link(s) — ${doneCount} already downloaded previously.`;
+  }
+  statusEl.textContent = statusText;
+
+  if (hasCompleted) {
+    const selectRestBtn = document.createElement("button");
+    selectRestBtn.className = "select-rest-btn";
+    selectRestBtn.textContent = "Select the rest";
+    selectRestBtn.style.cssText = "margin-left:8px;font-size:11px;padding:2px 8px;";
+    selectRestBtn.addEventListener("click", () => {
+      const checkboxes = filesListEl.querySelectorAll('input[type="checkbox"]');
+      checkboxes.forEach((cb) => {
+        const idx = Number(cb.dataset.index);
+        const item = items[idx];
+        cb.checked = item ? !completedSet.has(item.url) : false;
+      });
+      highlightedIndices.clear();
+      updateHighlights();
+      updateSelectAllFromChildren();
+      updateSelectionInfo();
+    });
+    selectAllRowEl.appendChild(selectRestBtn);
+  }
+
   updateSelectionInfo();
+}
+
+function createItemActions(session, item, index) {
+  const actions = document.createElement("div");
+  actions.className = "item-actions";
+  const sessionId = session.id;
+
+  if (item.state === "downloading" || item.state === "starting") {
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "btn-item-cancel";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      chrome.runtime.sendMessage({ type: "cancel_single_item", sessionId, index });
+    });
+    actions.appendChild(cancelBtn);
+  } else if (item.state === "queued") {
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "btn-item-cancel";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      chrome.runtime.sendMessage({ type: "cancel_single_item", sessionId, index });
+    });
+    actions.appendChild(cancelBtn);
+  } else if (item.state === "stopped") {
+    const resumeBtn = document.createElement("button");
+    resumeBtn.className = "btn-item-resume";
+    resumeBtn.textContent = "Resume";
+    resumeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      chrome.runtime.sendMessage({ type: "resume_single_item", sessionId, index });
+    });
+    actions.appendChild(resumeBtn);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "btn-item-cancel";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      chrome.runtime.sendMessage({ type: "cancel_single_item", sessionId, index });
+    });
+    actions.appendChild(cancelBtn);
+  } else if (item.state === "error" || item.state === "cancelled") {
+    const retryBtn = document.createElement("button");
+    retryBtn.className = "btn-item-retry";
+    retryBtn.textContent = "Retry";
+    retryBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      chrome.runtime.sendMessage({ type: "retry_single_item", sessionId, index });
+    });
+    actions.appendChild(retryBtn);
+
+    const openBtn = document.createElement("button");
+    openBtn.className = "btn-item-open";
+    openBtn.textContent = "Open";
+    openBtn.title = "Open the FuckingFast link in a new tab";
+    openBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      chrome.runtime.sendMessage({ type: "open_item_link", url: item.url });
+    });
+    actions.appendChild(openBtn);
+  }
+
+  return actions;
 }
 
 function renderStatusView(session) {
@@ -208,7 +371,7 @@ function renderStatusView(session) {
     return;
   }
 
-  items.forEach((item) => {
+  items.forEach((item, index) => {
     const row = document.createElement("div");
     row.className = "file-row";
 
@@ -221,12 +384,12 @@ function renderStatusView(session) {
 
     let text = item.state || "queued";
     let cls = "status-queued";
-    if (item.state === "starting") { text = "starting"; cls = "status-downloading"; }
+    if (item.state === "starting") { text = "resolving"; cls = "status-starting"; }
     else if (item.state === "downloading") { text = "downloading"; cls = "status-downloading"; }
     else if (item.state === "completed") { text = "completed"; cls = "status-completed"; }
     else if (item.state === "error") { text = "error"; cls = "status-error"; }
-    else if (item.state === "paused") { text = "paused"; cls = "status-paused"; }
     else if (item.state === "cancelled") { text = "cancelled"; cls = "status-cancelled"; }
+    else if (item.state === "stopped") { text = "stopped"; cls = "status-stopped"; }
 
     status.textContent = text;
     status.title = item.error || text;
@@ -234,28 +397,64 @@ function renderStatusView(session) {
 
     row.appendChild(label);
     row.appendChild(status);
+
+    const actions = createItemActions(session, item, index);
+    row.appendChild(actions);
+
     filesListEl.appendChild(row);
+
+    if (item.state === "downloading" && item.bytesWritten > 0) {
+      const speed = computeSpeed(index, item.bytesWritten);
+      const progressRow = document.createElement("div");
+      progressRow.className = "progress-row";
+
+      const barContainer = document.createElement("div");
+      barContainer.className = "progress-bar-container";
+      const barFill = document.createElement("div");
+      barFill.className = "progress-bar-fill";
+
+      let pct = 0;
+      if (item.totalBytes > 0) {
+        pct = Math.min(100, (item.bytesWritten / item.totalBytes) * 100);
+      }
+      barFill.style.width = pct > 0 ? pct.toFixed(1) + "%" : "0%";
+      if (item.totalBytes <= 0 && item.bytesWritten > 0) {
+        barFill.style.width = "100%";
+        barFill.style.opacity = "0.4";
+      }
+      barContainer.appendChild(barFill);
+
+      const progressText = document.createElement("span");
+      progressText.className = "progress-text";
+      let progressStr = formatBytes(item.bytesWritten);
+      if (item.totalBytes > 0) {
+        progressStr += " / " + formatBytes(item.totalBytes);
+      }
+      if (speed > 0) {
+        progressStr += " · " + formatSpeed(speed);
+      }
+      progressText.textContent = progressStr;
+
+      progressRow.appendChild(barContainer);
+      progressRow.appendChild(progressText);
+      filesListEl.appendChild(progressRow);
+    }
   });
 
   const counts = {
-    queued: 0,
-    starting: 0,
-    downloading: 0,
-    completed: 0,
-    error: 0,
-    paused: 0,
-    cancelled: 0
+    queued: 0, starting: 0, downloading: 0, completed: 0,
+    error: 0, cancelled: 0, stopped: 0
   };
   items.forEach((i) => { counts[i.state] = (counts[i.state] || 0) + 1; });
 
   const parts = [];
-  if (counts.starting) parts.push(`${counts.starting} starting`);
+  if (counts.starting) parts.push(`${counts.starting} resolving`);
   if (counts.completed) parts.push(`${counts.completed} completed`);
   if (counts.downloading) parts.push(`${counts.downloading} downloading`);
-  if (counts.paused) parts.push(`${counts.paused} paused`);
   if (counts.queued) parts.push(`${counts.queued} queued`);
   if (counts.error) parts.push(`${counts.error} failed`);
   if (counts.cancelled) parts.push(`${counts.cancelled} cancelled`);
+  if (counts.stopped) parts.push(`${counts.stopped} stopped`);
 
   if (selectionInfoEl) {
     selectionInfoEl.textContent = parts.join(" \u00b7 ");
@@ -265,8 +464,7 @@ function renderStatusView(session) {
     (i) =>
       i.state === "queued" ||
       i.state === "starting" ||
-      i.state === "downloading" ||
-      i.state === "paused"
+      i.state === "downloading"
   );
   const hasErrors = counts.error > 0;
 
@@ -275,17 +473,13 @@ function renderStatusView(session) {
     activeControlsEl.classList.add("visible");
     startButtonEl.style.display = "none";
     retryButtonEl.style.display = "none";
-
-    const anyPaused = items.some((i) => i.state === "paused") || session.paused;
-    pauseResumeButtonEl.textContent = anyPaused ? "Resume" : "Pause";
-    pauseResumeButtonEl.className = anyPaused ? "btn-success" : "btn-warning";
   } else {
     activeControlsEl.classList.remove("visible");
     startButtonEl.style.display = "";
     startButtonEl.disabled = true;
 
-    if (hasErrors) {
-      statusEl.textContent = `Finished \u2014 ${counts.error} download(s) failed.`;
+    if (hasErrors || counts.cancelled > 0 || counts.stopped > 0) {
+      statusEl.textContent = `Finished \u2014 ${(counts.error + counts.cancelled + counts.stopped)} download(s) need attention.`;
       retryButtonEl.style.display = "";
     } else {
       statusEl.textContent = "All selected downloads have finished.";
@@ -357,6 +551,57 @@ async function refreshFolderPermission(tabId) {
   }
 }
 
+function normalizeForMatch(name) {
+  return name.toLowerCase().replace(/[^a-z0-9.]/g, "");
+}
+
+async function scanFolderForExistingFiles(tabId, items) {
+  if (!tabId || !items?.length) return new Set();
+  try {
+    const handle = await loadDirectoryHandle(tabId);
+    if (!handle) return new Set();
+    const allowed = await ensureReadWritePermission(handle, { request: false });
+    if (!allowed) return new Set();
+
+    const existingFiles = new Map();
+    const normalizedFiles = new Map();
+    for await (const [name, entry] of handle.entries()) {
+      if (entry.kind === "file") {
+        const file = await entry.getFile();
+        existingFiles.set(name, file.size);
+        normalizedFiles.set(normalizeForMatch(name), file.size);
+      }
+    }
+
+    const doneOnDisk = new Set();
+    const MIN_COMPLETE_SIZE = 1024 * 1024;
+
+    for (const item of items) {
+      const expectedName = filenameFromItem(item, null);
+
+      // try exact match first
+      let size = existingFiles.get(expectedName);
+
+      // try normalized match (handles unicode/encoding differences)
+      if (size == null) {
+        size = normalizedFiles.get(normalizeForMatch(expectedName));
+      }
+
+      // try matching by label directly
+      if (size == null && item.label) {
+        size = normalizedFiles.get(normalizeForMatch(item.label));
+      }
+
+      if (size != null && size >= MIN_COMPLETE_SIZE) {
+        doneOnDisk.add(item.url);
+      }
+    }
+    return doneOnDisk;
+  } catch (e) {
+    return new Set();
+  }
+}
+
 async function pickDestinationFolder() {
   if (currentTabId == null) {
     statusEl.textContent = "Scan a FitGirl tab first.";
@@ -389,12 +634,21 @@ async function pickDestinationFolder() {
 
   chrome.runtime.sendMessage(
     { type: "set_destination", name: handle.name },
-    (response) => {
+    async (response) => {
       if (response?.ok && response.session) {
-        renderSession(response.session);
+        currentSession = response.session;
+      } else if (currentSession) {
+        currentSession.destinationName = handle.name;
+      }
+
+      if (currentSession?.items) {
+        filesOnDisk = await scanFolderForExistingFiles(currentTabId, currentSession.items);
+      }
+
+      updateDestinationUi(currentSession);
+      if (!currentSession?.hasStarted) {
+        renderSelectionView(currentSession);
       } else {
-        if (currentSession) currentSession.destinationName = handle.name;
-        updateDestinationUi(currentSession);
         updateSelectionInfo();
       }
     }
@@ -427,7 +681,6 @@ startButtonEl.addEventListener("click", async () => {
     return;
   }
 
-  // re-confirm permission on the user gesture
   try {
     const handle = await loadDirectoryHandle(currentTabId);
     const ok = await ensureReadWritePermission(handle, { request: true });
@@ -470,19 +723,35 @@ cancelButtonEl.addEventListener("click", () => {
   });
 });
 
-pauseResumeButtonEl.addEventListener("click", () => {
-  const isPaused = pauseResumeButtonEl.textContent.trim() === "Resume";
-  chrome.runtime.sendMessage(
-    { type: isPaused ? "resume_downloads" : "pause_downloads" },
-    () => {}
-  );
-});
-
 retryButtonEl.addEventListener("click", () => {
   retryButtonEl.style.display = "none";
   chrome.runtime.sendMessage({ type: "retry_failed" }, (response) => {
     if (response?.ok) scanCurrentTab();
   });
+});
+
+stopAllButtonEl.addEventListener("click", () => {
+  if (isBlocked) {
+    chrome.runtime.sendMessage({ type: "unblock_downloads" }, (response) => {
+      if (response?.ok) {
+        isBlocked = false;
+        updateBlockedUi();
+        scanCurrentTab();
+      }
+    });
+  } else {
+    chrome.runtime.sendMessage({ type: "stop_all_downloads" }, (response) => {
+      if (response?.ok) {
+        isBlocked = true;
+        updateBlockedUi();
+        scanCurrentTab();
+      }
+    });
+  }
+});
+
+managerButtonEl.addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("manager.html") });
 });
 
 function loadSettingsForDisplay() {
@@ -523,6 +792,8 @@ saveSettingsButtonEl.addEventListener("click", () => {
   );
 });
 
+let filesOnDisk = new Set();
+
 function scanCurrentTab() {
   chrome.runtime.sendMessage({ type: "scan_current_tab" }, async (response) => {
     if (!response || !response.ok) {
@@ -535,14 +806,25 @@ function scanCurrentTab() {
       return;
     }
     currentTabId = response.tabId ?? null;
+    if (response.blocked != null) {
+      isBlocked = response.blocked;
+      updateBlockedUi();
+    }
     await refreshFolderPermission(currentTabId);
+
+    if (response.session?.items) {
+      filesOnDisk = await scanFolderForExistingFiles(currentTabId, response.session.items);
+    } else {
+      filesOnDisk = new Set();
+    }
+
     renderSession(response.session);
   });
 }
 
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || message.type !== "session_updated") return;
-  if (currentTabId == null || message.tabId !== currentTabId) return;
+  if (!currentSession || message.sessionId !== currentSession.id) return;
   if (message.session) renderSession(message.session);
 });
 

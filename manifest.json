@@ -2,13 +2,14 @@
   "manifest_version": 3,
   "name": "FitDownloader",
   "description": "FitGirl → pick FuckingFast parts → Windows folder per tab → concurrent background downloads with pause/cancel/retry.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "permissions": [
     "scripting",
     "tabs",
     "activeTab",
     "storage",
-    "offscreen"
+    "offscreen",
+    "alarms"
   ],
   "host_permissions": [
     "https://fitgirl-repacks.site/*",

@@ -1,8 +1,9 @@
 // Offscreen download worker: fetch → write into per-tab DirectoryHandle.
 
 const activeJobs = new Map();
+const PROGRESS_INTERVAL_MS = 500;
 
-async function writeResponseToFile(response, fileHandle, { signal, startOffset = 0 }) {
+async function writeResponseToFile(response, fileHandle, { signal, startOffset = 0, onProgress }) {
   const writable = await fileHandle.createWritable({
     keepExistingData: startOffset > 0
   });
@@ -14,11 +15,14 @@ async function writeResponseToFile(response, fileHandle, { signal, startOffset =
       const buf = await response.arrayBuffer();
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       await writable.write(buf);
-      return startOffset + buf.byteLength;
+      const total = startOffset + buf.byteLength;
+      if (onProgress) onProgress(total);
+      return total;
     }
 
     const reader = response.body.getReader();
     let written = startOffset;
+    let lastReport = Date.now();
     while (true) {
       if (signal?.aborted) {
         reader.cancel().catch(() => {});
@@ -28,13 +32,24 @@ async function writeResponseToFile(response, fileHandle, { signal, startOffset =
       if (done) break;
       await writable.write(value);
       written += value.byteLength;
+
+      const now = Date.now();
+      if (onProgress && now - lastReport >= PROGRESS_INTERVAL_MS) {
+        lastReport = now;
+        onProgress(written);
+      }
     }
+    if (onProgress) onProgress(written);
     return written;
   } finally {
     try {
-      await writable.close();
+      if (signal?.aborted) {
+        await writable.abort();
+      } else {
+        await writable.close();
+      }
     } catch (e) {
-      // ignore close errors after abort
+      // ignore errors after abort
     }
   }
 }
@@ -42,6 +57,7 @@ async function writeResponseToFile(response, fileHandle, { signal, startOffset =
 async function downloadJob(message) {
   const {
     jobId,
+    sessionId,
     tabId,
     index,
     url,
@@ -50,10 +66,13 @@ async function downloadJob(message) {
   } = message;
 
   const controller = new AbortController();
-  activeJobs.set(jobId, { controller, paused: false });
+  activeJobs.set(jobId, { controller });
+
+  let dirHandle = null;
+  let filename = null;
 
   try {
-    const dirHandle = await loadDirectoryHandle(tabId);
+    dirHandle = await loadDirectoryHandle(tabId);
     if (!dirHandle) {
       throw new Error("No destination folder for this tab. Pick a folder in the popup.");
     }
@@ -81,41 +100,63 @@ async function downloadJob(message) {
       throw new Error(`Download HTTP ${response.status} ${response.statusText}`);
     }
 
-    const filename = filenameFromItem(item, response.headers.get("content-disposition"));
+    const contentLength = parseInt(response.headers.get("content-length"), 10);
+    let totalBytes = -1;
+    if (Number.isFinite(contentLength) && contentLength > 0) {
+      totalBytes = (response.status === 206 ? resumeFrom : 0) + contentLength;
+    }
+
+    filename = filenameFromItem(item, response.headers.get("content-disposition"));
     const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
 
     let offset = resumeFrom;
     if (resumeFrom > 0 && response.status !== 206) {
-      // server ignored range — rewrite from scratch
       offset = 0;
     }
 
+    const onProgress = (bytesWritten) => {
+      chrome.runtime.sendMessage({
+        type: "offscreen_download_progress",
+        jobId,
+        sessionId,
+        index,
+        bytesWritten,
+        totalBytes
+      }, () => { void chrome.runtime.lastError; });
+    };
+
     await writeResponseToFile(response, fileHandle, {
       signal: controller.signal,
-      startOffset: offset
+      startOffset: offset,
+      onProgress
     });
 
     activeJobs.delete(jobId);
     chrome.runtime.sendMessage({
       type: "offscreen_download_done",
       jobId,
-      tabId,
+      sessionId,
       index,
       filename
     }, () => { void chrome.runtime.lastError; });
   } catch (err) {
-    const job = activeJobs.get(jobId);
     activeJobs.delete(jobId);
     const aborted = err?.name === "AbortError" || controller.signal.aborted;
-    const paused = aborted && job?.paused === true;
+
+    if (dirHandle && filename) {
+      try {
+        await dirHandle.removeEntry(filename);
+      } catch (e) {
+        // file might not exist yet or already removed
+      }
+    }
 
     chrome.runtime.sendMessage({
       type: "offscreen_download_failed",
       jobId,
-      tabId,
+      sessionId,
       index,
-      paused,
-      cancelled: aborted && !paused,
+      cancelled: aborted,
       status: err?.status,
       error: err?.message || String(err)
     }, () => { void chrome.runtime.lastError; });
@@ -131,23 +172,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === "offscreen_pause_job") {
+  if (message.type === "offscreen_cancel_job") {
     const job = activeJobs.get(message.jobId);
     if (job) {
-      job.paused = true;
       job.controller.abort();
     }
     sendResponse({ ok: true });
     return true;
   }
 
-  if (message.type === "offscreen_cancel_job") {
-    const job = activeJobs.get(message.jobId);
-    if (job) {
-      job.paused = false;
-      job.controller.abort();
-    }
-    sendResponse({ ok: true });
+  if (message.type === "offscreen_audit_jobs") {
+    const requestedIds = message.jobIds || [];
+    const aliveJobIds = requestedIds.filter((id) => activeJobs.has(id));
+    sendResponse({ ok: true, aliveJobIds });
     return true;
   }
 
