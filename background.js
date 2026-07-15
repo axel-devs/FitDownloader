@@ -514,6 +514,8 @@ async function pumpQueueForTab(tabId, expectedGeneration) {
   sessions[tabId] = session;
   if (!session?.items?.length) return;
 
+  if (!session.hasStarted) return;
+
   const runGeneration =
     expectedGeneration == null ? getSessionGeneration(session) : expectedGeneration;
   if (!isSessionGenerationCurrent(tabId, runGeneration)) return;
@@ -588,7 +590,7 @@ function finishRunIfIdle(tabId) {
   if (!session) return false;
   if (!session.hasStarted) return false;
   if (hasActiveItems(session)) return false;
-  // restore full allItems list so the popup is not stuck on the last run subset
+  session.generation = getSessionGeneration(session) + 1;
   restoreSelectionItems(session, { captureFailures: true });
   return true;
 }
@@ -608,12 +610,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       item.state = "completed";
       item.jobId = null;
       item.error = null;
-      if (finishRunIfIdle(tabId)) {
-        // selection restored
-      }
+      const runFinished = finishRunIfIdle(tabId);
       await saveSessions();
       broadcastSessionUpdate(tabId);
-      pumpQueueForTab(tabId, getSessionGeneration(session));
+      if (!runFinished) {
+        pumpQueueForTab(tabId, getSessionGeneration(session));
+      }
     })();
     return;
   }
@@ -640,12 +642,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       }
 
-      if (finishRunIfIdle(tabId)) {
-        // selection restored
-      }
+      const runFinished = finishRunIfIdle(tabId);
       await saveSessions();
       broadcastSessionUpdate(tabId);
-      if (!session.paused && item.state === "error") {
+      if (!runFinished && !session.paused && item.state === "error") {
         pumpQueueForTab(tabId, getSessionGeneration(session));
       }
     })();
