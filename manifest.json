@@ -1,19 +1,21 @@
 {
   "manifest_version": 3,
   "name": "FitDownloader",
-  "description": "On FitGirl repack pages, collect all direct file links and trigger their downloads automatically.",
-  "version": "0.1.0",
+  "description": "FitGirl → pick FuckingFast parts → Windows folder per tab → concurrent background downloads with pause/cancel/retry.",
+  "version": "0.3.0",
   "permissions": [
     "scripting",
     "tabs",
     "activeTab",
-    "downloads",
-    "storage"
+    "storage",
+    "offscreen",
+    "alarms"
   ],
   "host_permissions": [
     "https://fitgirl-repacks.site/*",
     "https://fuckingfast.co/*",
-    "https://dl.fuckingfast.co/*"
+    "https://*.fuckingfast.co/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -35,5 +37,3 @@
     "512": "icons/icon-512.png"
   }
 }
-
-
