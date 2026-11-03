@@ -49,7 +49,20 @@ An HTTP 403 response means the host refused the request; a challenge page can al
 
 ## Development checks
 
-With Node.js installed, run `node --test tests/*.test.cjs`. Tests use mocked Chrome APIs and network responses; they do not start browser downloads. No package installation is required.
+Use Node 24 (24.8.0 or newer) and run:
+
+```text
+npm ci --ignore-scripts
+npm run check
+npm run test:browser:install
+npm run test:browser
+```
+
+`npm run check` runs scoped lint rules, manifest validation and 104 unit/DOM tests with application coverage thresholds (85% lines, 75% branches, 95% functions). Coverage includes unexecuted application scripts and excludes test harnesses. Open `coverage/index.html` for the detailed report.
+
+Browser tests load the real extension in a separate Chromium profile, use controlled page fixtures, and download only a tiny generated text fixture. They do not visit the real file host or open advertising. Browser installation is kept in this project's dependency cache.
+
+Four deliberately failing recovery specifications are available separately with `npm run test:regressions`. They expose the tracked REL-01 through REL-04 defects and are not counted as passing tests or included in coverage. CI runs them as an explicitly non-blocking diagnostic job until the corresponding fixes are implemented. See [tests/README.md](tests/README.md) and [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md).
 
 To check live compatibility, reload the unpacked extension and try one selected file before starting a full batch. Automated tests cover the observed download control and simulated host responses; the host's availability and verification requirements can change independently.
 

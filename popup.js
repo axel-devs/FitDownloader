@@ -67,9 +67,9 @@ function handleRowClick(event, index) {
   const checkbox = row.querySelector('input[type="checkbox"]');
   if (!checkbox) return;
 
-  if (event.target === checkbox) {
-    event.preventDefault();
-  }
+  // Native checkbox clicks (including Space) toggle before this handler runs.
+  // Let that activation stand; only row/label clicks need a manual toggle.
+  const nativeCheckboxClick = event.target === checkbox;
 
   if (event.shiftKey && lastClickedIndex >= 0) {
     const anchorCb = rows[lastClickedIndex]?.querySelector('input[type="checkbox"]');
@@ -87,7 +87,7 @@ function handleRowClick(event, index) {
       highlightedIndices.add(i);
     }
   } else if (event.ctrlKey || event.metaKey) {
-    checkbox.checked = !checkbox.checked;
+    if (!nativeCheckboxClick) checkbox.checked = !checkbox.checked;
     if (highlightedIndices.has(index)) {
       highlightedIndices.delete(index);
     } else {
@@ -95,7 +95,7 @@ function handleRowClick(event, index) {
     }
     lastClickedIndex = index;
   } else {
-    checkbox.checked = !checkbox.checked;
+    if (!nativeCheckboxClick) checkbox.checked = !checkbox.checked;
     highlightedIndices.clear();
     highlightedIndices.add(index);
     lastClickedIndex = index;
@@ -148,7 +148,6 @@ function renderSelectionView(session) {
     row.appendChild(label);
 
     row.addEventListener("click", (e) => {
-      if (e.target === checkbox) e.preventDefault();
       handleRowClick(e, index);
     });
 

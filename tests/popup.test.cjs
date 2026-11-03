@@ -32,7 +32,7 @@ function harness() {
       }
     } }
   });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'popup.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'popup.js'), 'utf8'), context, { filename: require('node:url').pathToFileURL(path.resolve(__dirname, '..', 'popup.js')).href });
   return { context, elements, messages };
 }
 

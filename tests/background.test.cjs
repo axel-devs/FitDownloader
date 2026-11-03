@@ -3,56 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
-
-const root = path.join(__dirname, '..');
-const source = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
-const tick = () => new Promise(resolve => setImmediate(resolve));
-
-function harness() {
-  const listeners = {};
-  const requests = [];
-  const downloads = [];
-  const paused = [];
-  const chrome = {
-    runtime: {
-      onMessage: { addListener(fn) { listeners.message = fn; } },
-      sendMessage(_message, callback) { callback(); }
-    },
-    storage: {
-      local: { get: async () => ({}), set: async () => {} },
-      sync: { get: async () => ({ concurrency: 2 }) }
-    },
-    tabs: {
-      query: async () => [{ id: 1, url: 'https://fitgirl-repacks.site/game/' }],
-      onRemoved: { addListener(fn) { listeners.removed = fn; } }
-    },
-    downloads: {
-      onChanged: { addListener(fn) { listeners.changed = fn; } },
-      download(options, callback) { downloads.push(options); callback(downloads.length); },
-      pause: async id => { paused.push(id); },
-      cancel: async () => {}
-    }
-  };
-  const context = vm.createContext({
-    URL, AbortSignal, chrome,
-    console: { warn() {}, error() {} },
-    fetch: async (url, options) => {
-      requests.push({ url, options });
-      return { ok: true, text: async () => 'https://dl.fuckingfast.co/dl/test.rar' };
-    }
-  });
-  vm.runInContext(source, context);
-  const run = code => vm.runInContext(code, context);
-  const message = payload => new Promise(resolve => listeners.message(payload, {}, resolve));
-  const seed = (count = 4) => run(`
-    sessionsLoaded = true; downloadMapLoaded = true;
-    sessions[1] = createSessionFromExtractedLinks(
-      {id: 1, url: 'https://fitgirl-repacks.site/game/'}, 'Game',
-      Array.from({length: ${count}}, (_, i) => ({url: 'https://fuckingfast.co/file' + i, label: 'File ' + i})), 0);
-    sessions[1].hasStarted = true;
-  `);
-  return { context, chrome, requests, downloads, paused, run, message, seed };
-}
+const { harness, tick, root } = require('./helpers/background.cjs');
 
 test('all application scripts parse and manifest references exist', () => {
   for (const file of ['background.js', 'popup.js', 'options.js']) {
