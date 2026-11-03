@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "FitDownloader",
   "description": "On FitGirl repack pages, collect all direct file links and trigger their downloads automatically.",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "permissions": [
     "scripting",
     "tabs",

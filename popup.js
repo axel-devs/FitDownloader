@@ -8,6 +8,8 @@ const backButtonEl = document.getElementById("back-button");
 const settingsButtonEl = document.getElementById("settings-button");
 const concurrencyInputEl = document.getElementById("concurrency-input");
 const saveSettingsButtonEl = document.getElementById("save-settings-button");
+const parallelInputEl = document.getElementById("parallel-input");
+const applyParallelButtonEl = document.getElementById("apply-parallel-button");
 const settingsStatusEl = document.getElementById("settings-status");
 const selectionInfoEl = document.getElementById("selection-info");
 const activeControlsEl = document.getElementById("active-controls");
@@ -140,7 +142,7 @@ function renderSelectionView(session) {
 
     const label = document.createElement("label");
     label.textContent = item.label || item.url;
-    label.title = item.label || item.url;
+    label.title = item.url;
 
     row.appendChild(checkbox);
     row.appendChild(label);
@@ -191,7 +193,7 @@ function renderStatusView(session) {
 
     const label = document.createElement("label");
     label.textContent = item.label || item.url;
-    label.title = item.label || item.url;
+    label.title = item.url;
 
     const status = document.createElement("span");
     status.className = "file-status";
@@ -206,6 +208,7 @@ function renderStatusView(session) {
     else if (item.state === "cancelled") { text = "cancelled"; cls = "status-cancelled"; }
 
     status.textContent = text;
+    if (item.error) status.title = item.error;
     status.classList.add(cls);
 
     row.appendChild(label);
@@ -240,11 +243,15 @@ function renderStatusView(session) {
 
   if (anyActive) {
     statusEl.textContent = `${counts.completed} of ${items.length} downloads finished.`;
+    if (session.paused) {
+      const reason = items.find((item) => item.error)?.error;
+      statusEl.textContent = "Batch paused." + (reason ? ` ${reason}` : "");
+    }
     activeControlsEl.classList.add("visible");
     startButtonEl.style.display = "none";
     retryButtonEl.style.display = "none";
 
-    const anyPaused = items.some((i) => i.state === "paused");
+    const anyPaused = session.paused || items.some((i) => i.state === "paused");
     pauseResumeButtonEl.textContent = anyPaused ? "Resume" : "Pause";
     pauseResumeButtonEl.className = anyPaused ? "btn-success" : "btn-warning";
   } else {
@@ -253,7 +260,9 @@ function renderStatusView(session) {
     startButtonEl.disabled = true;
 
     if (hasErrors) {
-      statusEl.textContent = `Finished \u2014 ${counts.error} download(s) failed.`;
+      const firstError = items.find((item) => item.state === "error" && item.error)?.error;
+      statusEl.textContent = `Finished \u2014 ${counts.error} download(s) failed.` +
+        (firstError ? ` ${firstError}` : "");
       retryButtonEl.style.display = "";
     } else {
       statusEl.textContent = "All selected downloads have finished.";
@@ -324,7 +333,7 @@ selectAllEl.addEventListener("change", () => {
   updateSelectionInfo();
 });
 
-startButtonEl.addEventListener("click", () => {
+startButtonEl.addEventListener("click", async () => {
   const selected = getSelectedItemsForStart();
   if (!selected.length) {
     statusEl.textContent = "No files selected.";
@@ -332,6 +341,10 @@ startButtonEl.addEventListener("click", () => {
   }
 
   startButtonEl.disabled = true;
+  if (!(await persistConcurrency(parallelInputEl.value))) {
+    startButtonEl.disabled = false;
+    return;
+  }
   statusEl.textContent = "Starting downloads\u2026";
 
   chrome.runtime.sendMessage(
@@ -386,15 +399,20 @@ function loadSettingsForDisplay() {
     const n = response.settings?.concurrency;
     concurrencyInfoEl.textContent = `Max concurrent downloads: ${n}`;
     concurrencyInputEl.value = n;
+    parallelInputEl.value = n;
   });
 }
 
 backButtonEl.addEventListener("click", () => setView("main"));
 settingsButtonEl.addEventListener("click", () => setView("settings"));
 
-saveSettingsButtonEl.addEventListener("click", () => {
-  const desired = Number(concurrencyInputEl.value) || 5;
-  chrome.runtime.sendMessage(
+function persistConcurrency(value) {
+  const desired = Number(value);
+  if (!Number.isInteger(desired) || desired < 1 || desired > 20) {
+    settingsStatusEl.textContent = statusEl.textContent = "Enter a whole number between 1 and 20.";
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => chrome.runtime.sendMessage(
     { type: "save_settings", settings: { concurrency: desired } },
     (response) => {
       if (!response || !response.ok) {
@@ -402,18 +420,25 @@ saveSettingsButtonEl.addEventListener("click", () => {
           response?.error ||
           chrome.runtime.lastError?.message ||
           "Failed to save settings.";
+        statusEl.textContent = settingsStatusEl.textContent;
+        resolve(false);
         return;
       }
       const n = response.settings?.concurrency ?? desired;
       concurrencyInputEl.value = n;
+      parallelInputEl.value = n;
       settingsStatusEl.textContent = "Settings saved.";
       concurrencyInfoEl.textContent = `Max concurrent downloads: ${n}`;
       setTimeout(() => {
         settingsStatusEl.textContent = "";
       }, 2000);
+      resolve(true);
     }
-  );
-});
+  ));
+}
+
+saveSettingsButtonEl.addEventListener("click", () => persistConcurrency(concurrencyInputEl.value));
+applyParallelButtonEl.addEventListener("click", () => persistConcurrency(parallelInputEl.value));
 
 // ---------------------------------------------------------------------------
 // Tab scanning & live updates
