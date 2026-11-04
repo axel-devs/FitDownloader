@@ -7,10 +7,33 @@ const DEFAULT_SETTINGS = {
   concurrency: DEFAULT_MAX_CONCURRENT_DOWNLOADS
 };
 
-function swapProtocol(url) {
-  if (url.startsWith("https://")) return url.replace("https://", "http://");
-  if (url.startsWith("http://")) return url.replace("http://", "https://");
-  return url;
+function parseTrustedUrl(value, hosts, upgradeHttp = false) {
+  try {
+    const url = new URL(value);
+    if (upgradeHttp && url.protocol === "http:") url.protocol = "https:";
+    if (url.protocol !== "https:" || !hosts.includes(url.hostname) ||
+        url.username || url.password || url.port) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function isSupportedSource(value) {
+  return !!parseTrustedUrl(value, ["fitgirl-repacks.site"]);
+}
+
+function normalizeLandingUrl(value) {
+  const url = parseTrustedUrl(value, ["fuckingfast.co"], true);
+  return url ? url.href : null;
+}
+
+function validateDirectUrl(value) {
+  const url = parseTrustedUrl(value, ["fuckingfast.co", "dl.fuckingfast.co"]);
+  if (!url || !url.pathname.startsWith("/dl/")) {
+    throw new Error("Rejected an unsafe or unsupported download URL.");
+  }
+  return url.href;
 }
 
 // In-memory sessions keyed by Chrome tab ID
@@ -74,8 +97,10 @@ async function saveSessions() {
 
 function normalizeLink(link) {
   if (!link || typeof link.url !== "string" || !link.url.length) return null;
+  const url = normalizeLandingUrl(link.url);
+  if (!url) return null;
   return {
-    url: link.url,
+    url,
     label: typeof link.label === "string" && link.label.length ? link.label : link.url
   };
 }
@@ -96,6 +121,7 @@ function normalizeSessionItem(item) {
     url: link.url,
     label: link.label,
     state: typeof item?.state === "string" ? item.state : "queued",
+    error: typeof item?.error === "string" ? item.error : "",
     downloadId: Number.isInteger(item?.downloadId) ? item.downloadId : null
   };
 }
@@ -349,7 +375,7 @@ function broadcastSessionUpdate(tabId) {
 async function extractFuckingFastLinks(tabId) {
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId },
-    world: "MAIN",
+    world: "ISOLATED",
     func: () => {
       const rawTitle = document.title || "";
       const title = rawTitle.replace(/ - FitGirl Repacks.*/i, "").trim();
@@ -399,43 +425,98 @@ async function extractFuckingFastLinks(tabId) {
   return { title: "", items: [] };
 }
 
-/**
- * Given a FuckingFast landing URL, fetch its HTML and extract the
- * underlying direct /dl/... URL that the page's download() function
- * would open. FuckingFast currently serves these from dl.fuckingfast.co.
- */
+function extractSecureDownloadUrl(text) {
+  const decoded = text.replace(/\\\//g, "/").replace(/&amp;/g, "&");
+  const match = decoded.match(/https:\/\/(?:dl\.)?fuckingfast\.co\/dl\/[^\s"'<>\\]+/);
+  return match ? validateDirectUrl(match[0]) : null;
+}
+
+function hostResponseError(response, html) {
+  if (response.status === 403 || /<title[^>]*>\s*Just a moment|cf-chl-|cf-turnstile/i.test(html)) {
+    const error = new Error("The file host blocked this request or requires browser verification (HTTP " + response.status + "). Open the original file page, complete any verification yourself, then resume. No ad pages were opened.");
+    error.code = "HOST_VERIFICATION";
+    return error;
+  }
+  return new Error(`File host returned HTTP ${response.status}.`);
+}
+
+// Follow the host's observed HTMX protocol, never its advertising scripts.
 async function getDirectDownloadUrl(fuckingFastUrl) {
-  const attempts = [fuckingFastUrl, swapProtocol(fuckingFastUrl)];
-  let lastError;
+  const normalized = normalizeLandingUrl(fuckingFastUrl);
+  if (!normalized) throw new Error("Rejected an unsupported file-host URL.");
+  const url = new URL(normalized);
+  // Fragments contain display filenames, not part of the HTTP resource.
+  url.hash = "";
+  let res;
+  try {
+    res = await fetch(url.href, {
+      credentials: "include",
+      redirect: "error",
+      signal: AbortSignal.timeout(20000)
+    });
+  } catch (err) {
+    throw new Error("Unable to fetch the HTTPS file page. Reload the extension and allow access to fuckingfast.co in Chrome's extension Site access settings. The host may also be unavailable or redirecting. " + err.message);
+  }
+  const html = await res.text();
+  if (!res.ok) throw hostResponseError(res, html);
+  const legacyLink = extractSecureDownloadUrl(html);
+  if (legacyLink) return legacyLink;
 
-  for (const url of attempts) {
-    try {
-      const res = await fetch(url, { credentials: "include" });
-
-      if (!res.ok) {
-        lastError = new Error(
-          `Failed to fetch FuckingFast page (${res.status} ${res.statusText})`
-        );
-        continue;
-      }
-
-      const html = await res.text();
-
-      const match = html.match(
-        /https?:\/\/(?:dl\.)?fuckingfast\.co\/dl\/[^\s"'<>\\]+/
-      );
-      if (!match) {
-        lastError = new Error("Direct /dl/ URL not found in FuckingFast page HTML");
-        continue;
-      }
-
-      return match[0];
-    } catch (err) {
-      lastError = err;
-    }
+  // The current DOWNLOAD control has hx-post="/f/<file-id>/go".
+  // Accept only the endpoint belonging to this exact landing page.
+  const fileId = url.pathname.slice(1);
+  const expectedPath = `/f/${fileId}/go`;
+  const postPaths = Array.from(html.matchAll(/\bhx-post\s*=\s*["']([^"']+)["']/gi));
+  const endpoint = postPaths.map((match) => {
+    try { return new URL(match[1], url); } catch { return null; }
+  }).find((candidate) => candidate && candidate.origin === url.origin &&
+    candidate.pathname === expectedPath && !candidate.search && !candidate.hash &&
+    !candidate.username && !candidate.password);
+  if (!/^[A-Za-z0-9_-]+$/.test(fileId) || !endpoint) {
+    if (/<title[^>]*>\s*Just a moment|cf-chl-/i.test(html)) throw hostResponseError(res, html);
+    throw new Error("No secure direct download link or supported download control found on the file page.");
   }
 
-  throw lastError;
+  let generated;
+  try {
+    generated = await fetch(endpoint.href, {
+      method: "POST",
+      headers: {
+        "HX-Request": "true",
+        "HX-Current-URL": url.href,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: "",
+      credentials: "include",
+      redirect: "error",
+      signal: AbortSignal.timeout(20000)
+    });
+  } catch (err) {
+    throw new Error("The host's download-link request failed or redirected unexpectedly. No ad pages were opened. " + err.message);
+  }
+  const body = await generated.text();
+  if (!generated.ok) throw hostResponseError(generated, body);
+  // HTMX commonly returns navigation instructions in response headers.
+  const redirect = generated.headers.get("HX-Redirect");
+  if (redirect) return validateDirectUrl(new URL(redirect, url).href);
+  const location = generated.headers.get("HX-Location");
+  if (location) {
+    let target = location;
+    if (location.trim().startsWith("{")) {
+      try { target = JSON.parse(location).path; }
+      catch { throw new Error("The file host returned an invalid download response."); }
+    }
+    return validateDirectUrl(new URL(target, url).href);
+  }
+  const direct = extractSecureDownloadUrl(body);
+  if (direct) return direct;
+  // Some HTMX integrations deliver the URL as an event payload.
+  for (const name of ["HX-Trigger", "HX-Trigger-After-Swap", "HX-Trigger-After-Settle"]) {
+    const eventLink = extractSecureDownloadUrl(generated.headers.get(name) || "");
+    if (eventLink) return eventLink;
+  }
+  if (/Just a moment|cf-chl-|cf-turnstile/i.test(body)) throw hostResponseError(generated, body);
+  throw new Error("The host's download request succeeded but returned an unsupported response. No ad pages were opened.");
 }
 
 /**
@@ -445,7 +526,7 @@ function startDownload(dlUrl) {
   return new Promise((resolve, reject) => {
     chrome.downloads.download(
       {
-        url: dlUrl,
+        url: validateDirectUrl(dlUrl),
         saveAs: false
       },
       (downloadId) => {
@@ -466,6 +547,7 @@ function startDownload(dlUrl) {
  * Ensure we have a session for the given active FitGirl tab.
  */
 async function ensureSessionForTab(tab) {
+  if (!isSupportedSource(tab?.url)) throw new Error("Please open an HTTPS FitGirl repack page first.");
   await loadSessions();
   await reconcileSessionForTab(tab.id);
 
@@ -489,17 +571,19 @@ async function ensureSessionForTab(tab) {
  */
 async function pumpQueueForTab(tabId, expectedGeneration) {
   await loadSessions();
+  const { concurrency } = await getCurrentSettings();
+  await loadDownloadMap();
+  // Read current state after all awaits, then reserve slots synchronously.
   const existingSession = sessions[tabId];
   if (!existingSession) return;
   const session = normalizeSessionShape(existingSession);
   sessions[tabId] = session;
-  if (!session || !Array.isArray(session.items) || !session.items.length) return;
+  if (!session.hasStarted || !Array.isArray(session.items) || !session.items.length) return;
 
   const runGeneration =
     expectedGeneration == null ? getSessionGeneration(session) : expectedGeneration;
   if (!isSessionGenerationCurrent(tabId, runGeneration)) return;
 
-  const { concurrency } = await getCurrentSettings();
   const maxConcurrent = clampConcurrency(concurrency);
 
   if (session.paused) return;
@@ -511,8 +595,6 @@ async function pumpQueueForTab(tabId, expectedGeneration) {
   let availableSlots = maxConcurrent - activeCount;
   if (availableSlots <= 0) return;
 
-  await loadDownloadMap();
-
   for (let i = 0; i < session.items.length && availableSlots > 0; i++) {
     const item = getSessionItemForRun(tabId, i, runGeneration);
     if (!item) continue;
@@ -520,6 +602,7 @@ async function pumpQueueForTab(tabId, expectedGeneration) {
 
     availableSlots--;
     item.state = "starting";
+    item.error = "";
 
     (async (index, generation) => {
       try {
@@ -535,14 +618,13 @@ async function pumpQueueForTab(tabId, expectedGeneration) {
           return;
         }
 
-        let downloadId;
-        try {
-          downloadId = await startDownload(dlUrl);
-        } catch (dlErr) {
-          const altUrl = swapProtocol(dlUrl);
-          console.warn("Download failed, retrying with", altUrl, dlErr);
-          downloadId = await startDownload(altUrl);
+        if (sessions[tabId].paused) {
+          activeItemBeforeDownload.state = "queued";
+          await saveSessions();
+          broadcastSessionUpdate(tabId);
+          return;
         }
+        const downloadId = await startDownload(dlUrl);
 
         const activeItemAfterDownload = getSessionItemForRun(tabId, index, generation);
         if (!activeItemAfterDownload || activeItemAfterDownload.state !== "starting") {
@@ -557,13 +639,21 @@ async function pumpQueueForTab(tabId, expectedGeneration) {
         activeItemAfterDownload.downloadId = downloadId;
         activeItemAfterDownload.state = "downloading";
         downloadIdToKey.set(downloadId, { tabId, index, generation });
+        // Pause may arrive while Chrome is creating the download.
+        if (sessions[tabId].paused) {
+          await chrome.downloads.pause(downloadId);
+          const current = getSessionItemForRun(tabId, index, generation);
+          if (current) current.state = "paused";
+        }
         await Promise.all([saveSessions(), saveDownloadMap()]);
         broadcastSessionUpdate(tabId);
       } catch (err) {
         const activeItemOnError = getSessionItemForRun(tabId, index, generation);
         if (!activeItemOnError) return;
         console.warn("Failed to start FuckingFast URL:", activeItemOnError.url, err);
-        activeItemOnError.state = "error";
+        activeItemOnError.state = err.code === "HOST_VERIFICATION" ? "queued" : "error";
+        if (err.code === "HOST_VERIFICATION") sessions[tabId].paused = true;
+        activeItemOnError.error = err.message || String(err);
         activeItemOnError.downloadId = null;
         await saveSessions();
         broadcastSessionUpdate(tabId);
@@ -657,7 +747,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           currentWindow: true
         });
 
-        if (!tab || !tab.id || !tab.url?.includes("fitgirl-repacks.site")) {
+        if (!tab || !tab.id || !isSupportedSource(tab.url)) {
           sendResponse({
             ok: false,
             error: "Please open a FitGirl repack page first."
@@ -695,6 +785,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const tabId = tab.id;
         const session = normalizeSessionShape(await ensureSessionForTab(tab));
         sessions[tabId] = session;
+
+        if (hasActiveItems(session)) {
+          throw new Error("A batch is already running. Cancel it before starting another.");
+        }
 
         const selectedUrls = new Set(
           (message.items || [])
@@ -787,6 +881,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             ok: true,
             settings: { concurrency: newConcurrency }
           });
+          for (const tabId of Object.keys(sessions)) {
+            pumpQueueForTab(Number(tabId)).catch(console.error);
+          }
         }
       }
     );
@@ -855,7 +952,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // Rebuild immediately for the current page so popup opens into fresh
         // detection state without requiring a manual reset action.
-        if (tab.url?.includes("fitgirl-repacks.site")) {
+        if (isSupportedSource(tab.url)) {
           const refreshed = await rebuildSessionForTab(tab, session.generation);
           sessions[tabId] = refreshed;
         }
